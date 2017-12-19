@@ -15,7 +15,8 @@ class Processor:
     ```python
     proc = ml.Processor(train, test)
     pred = proc.mlknn_trainer(k=2, mode='euclidean')
-    y, y_ = model.predictor(pred)
+    y, y_ = proc.predictor(pred)
+    res = proc.evaluator(y, y_)
     ```
 
     """
@@ -43,10 +44,10 @@ class Processor:
 
         with tf.variable_scope('common'):
             self.__placeholder = (
-                tf.placeholder(dtype=tf.float32, shape=[None, x_dim]),
-                tf.placeholder(dtype=tf.int32, shape=[None, y_dim]),
-                tf.placeholder(dtype=tf.float32, shape=[x_dim]),
-                tf.placeholder(dtype=tf.int32, shape=[y_dim])
+                tf.placeholder(dtype=tf.float32, shape=[None, x_dim], name='tr_x'),
+                tf.placeholder(dtype=tf.int32, shape=[None, y_dim], name='tr_y'),
+                tf.placeholder(dtype=tf.float32, shape=[x_dim], name='te_x'),
+                tf.placeholder(dtype=tf.int32, shape=[y_dim], name='te_y')
             )
 
     def __init_session(self):
@@ -184,7 +185,6 @@ class Processor:
             y_dim = self.y_dim
 
             # constants
-
             label_indexes = tf.constant(list(range(y_dim)), dtype=tf.int32)
 
             # placeholders for training and testing data in tensorflow
@@ -292,4 +292,90 @@ class Processor:
         self.__pred = pred
         return pred
 
+    def bpmll_trainer(self, m=30, learning_rate=0.1):
+        """
+        to train predicting parameters with BP-MLL algorithm, based on article.
+        'Multilabel Neural Networks with Applications to Functional Genomics and Text Categorization',
+        Min-Ling Zhang and Zhi-Hua Zhou, 2006
+        :param m: node number in hidden layer
+        :param learning_rate: learning rate
+        :return:pred node in tf, used in function o.predictor
+        """
 
+        # this line helps to limit current scope of tf variables. when initialize
+        # variables, use
+        #   tf.variables_initializer(tf.global_variables('bpmll'))
+        # instead of
+        #   tf.global_variables_initializer()
+
+        with tf.variable_scope('bpmll'):
+
+            # to get the dimension value of x-vectors and y-vectors
+            y_dim = self.y_dim
+
+            # constants in tf
+            one = tf.constant(1)
+            zero = tf.constant(0)
+
+            # placeholders for training and testing data in tensorflow
+            tr_x, tr_y, te_x, te_y = self.__placeholder
+
+            # get global session
+            sess = self.__sess
+
+            # STEP 1. CREATE NEURONAL NETWORK
+
+            # define a function to reuse similar tf structures
+            def layer(entrance: tf.Tensor, out_dim):
+
+                in_dim = entrance.get_shape().as_list()[1]
+
+                initializer = tf.random_normal_initializer()
+                bias = tf.get_variable(name='bias', shape=[1, out_dim], initializer=initializer)
+                weight = tf.get_variable(name='weight', shape=[in_dim, out_dim], initializer=initializer)
+                net = tf.matmul(entrance, weight) + bias
+                return tf.nn.tanh(net, name='tanh')
+            # layer 1, though training and testing network uses same parameters, we
+            # created two networks to fit codes with the whole class structure
+            with tf.variable_scope('layer1', reuse=tf.AUTO_REUSE):
+                layer1_train = layer(tr_x, m)
+                layer1_test = layer(tf.expand_dims(te_x, axis=0), m)
+            # layer 2
+            with tf.variable_scope('layer2', reuse=tf.AUTO_REUSE):
+                layer2_train = layer(layer1_train, y_dim)
+                layer2_test = layer(layer1_test, y_dim)
+
+            # STEP 2. CALCULATE LOSS FUNCTION
+
+            # to classify label sets into two subsets, then calculate loss function
+            c_k = tf.gather_nd(layer2_train, tf.where(tf.equal(tr_y, one)))
+            c_l = tf.gather_nd(layer2_train, tf.where(tf.equal(tr_y, zero)))
+            k, l = tf.meshgrid(c_k, c_l)
+            # loss function
+            loss_func = tf.reduce_mean(tf.exp(-(k - l)))
+
+            # STEP 3. SET TRAINING PARAMS
+            train_step = tf.train.AdagradOptimizer(learning_rate=learning_rate).minimize(loss_func)
+
+            # STEP 4. PREDICTOR
+
+            # the output of layer2_test node is the predict value of each sample. a
+            # threshold is selected with LS method to classify each label into label or non-label
+            # Todo: correct threshold method. We now use 0.5 as a natural threshold
+            pred = tf.squeeze(layer2_test > 0.5)
+
+            # initialize all variables for bpmll
+            sess.run(tf.variables_initializer(tf.global_variables('bpmll')))
+
+            # run training procedures
+            for i in range(self.train.num):
+                # when using training set, data is divided into sample p and set(X-p) to refresh c-maps
+                print('train the %d-th data within the total of %d data' % (i, self.train.num))
+                inner_tr_x = [self.train.xs[i]]
+                inner_tr_y = [self.train.ys[i]]
+                # training
+                feed_dict = {tr_x: inner_tr_x, tr_y: inner_tr_y}
+                sess.run(train_step, feed_dict=feed_dict)
+
+            self.__pred = pred
+            return pred

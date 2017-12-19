@@ -6,14 +6,15 @@ import multilabel as ml
 import os
 import numpy as np
 
-dataset = ds.Dataset('corel5k')
+dataset = ds.Dataset('CAL500')
 fold_iter = dataset.divide()
 
 for fold in fold_iter:
     train = fold['train']
     test = fold['test']
     model = ml.Processor(train, test)
-    pred = model.mlknn_trainer(k=10, mode='euclidean')
+    # pred = model.mlknn_trainer(k=10)
+    pred = model.bpmll_trainer(m=500)
     y, y_ = model.predictor(pred)
     print(model.evaluator(y, y_))
 
@@ -25,5 +26,6 @@ for fold in fold_iter:
 #                     [[1, 1], [0, 0], [1, 0]])
 # model = ml.Processor(train, test)
 # pred = model.mlknn_trainer(k=2, mode='euclidean')
+# pred = model.bpmll_trainer(m=10)
 # y, y_ = model.predictor(pred)
 # print(model.evaluator(y, y_))
